@@ -1,0 +1,1118 @@
+document.addEventListener('DOMContentLoaded', () => {
+    // State
+    const state = {
+        products: JSON.parse(localStorage.getItem('apparel_products')) || []
+    };
+
+    // DOM Elements - Main UI
+    const grid = document.getElementById('productGrid');
+    const emptyState = document.getElementById('emptyState');
+    const addBtn = document.getElementById('addBtn');
+
+    // DOM Elements - Modal
+    const addModal = document.getElementById('addModal');
+    const closeAddModal = document.getElementById('closeAddModal');
+    const addForm = document.getElementById('addForm');
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('itemImage');
+    const imagePreviewContainer = document.getElementById('imagePreviewContainer');
+    const filePrompt = document.getElementById('filePrompt');
+
+    // DOM Elements - Tabs & Controls
+    const tabList = document.getElementById('tabList');
+    const tabReport = document.getElementById('tabReport');
+    const listViewControls = document.getElementById('listViewControls');
+    const reportSection = document.getElementById('reportSection');
+
+    // DOM Elements - Report
+    const typeMonthly = document.getElementById('typeMonthly');
+    const typePeriod = document.getElementById('typePeriod');
+    const monthlyControls = document.getElementById('monthlyControls');
+    const periodControls = document.getElementById('periodControls');
+    const reportMonth = document.getElementById('reportMonth');
+    const reportStartDate = document.getElementById('reportStartDate');
+    const reportEndDate = document.getElementById('reportEndDate');
+    const calcBtn = document.getElementById('calcBtn');
+    const statsGrid = document.getElementById('statsGrid');
+
+    let currentEditId = null;
+    let currentImages = []; // Array of Base64 strings
+    let reportType = 'monthly'; // 'monthly' or 'period'
+
+    // Status Definitions
+    const STATUS_MAP = {
+        'purchased': { label: '仕入済', class: 'status-purchased' },
+        'listed': { label: '出品中', class: 'status-listed' },
+        'sold': { label: '売却済', class: 'status-sold' },
+        'hold': { label: '保留', class: 'status-hold' },
+        'stagnant': { label: '回転悪化', class: 'status-stagnant' }
+    };
+
+    // Helper: Save to LocalStorage
+    const save = () => {
+        localStorage.setItem('apparel_products', JSON.stringify(state.products));
+        render();
+    };
+
+    // Helper: Format Currency
+    const formatCurrency = (num) => {
+        return new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(num);
+    };
+
+    // Helper: Calculate Days Difference
+    const getDaysDiff = (dateString) => {
+        if (!dateString) return 0;
+        const date = new Date(dateString);
+        const today = new Date();
+        const diffTime = Math.abs(today - date);
+        return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    };
+
+    // --- Analytics Logic ---
+
+    // Switch Tabs
+    // Switch Tabs
+    const switchTab = (tab) => {
+        const dashboardSection = document.getElementById('dashboardSection');
+        const tabDashboard = document.getElementById('tabDashboard');
+
+        // Reset all
+        [tabList, tabReport, tabDashboard].forEach(el => el && el.classList.remove('active'));
+        listViewControls.style.display = 'none';
+        grid.style.display = 'none';
+        emptyState.style.display = 'none';
+        reportSection.style.display = 'none';
+        if (dashboardSection) dashboardSection.style.display = 'none';
+
+        if (tab === 'list') {
+            tabList.classList.add('active');
+            listViewControls.style.display = 'block';
+            grid.style.display = 'grid';
+            render();
+        } else if (tab === 'report') {
+            tabReport.classList.add('active');
+            reportSection.style.display = 'block';
+            if (!reportMonth.value) {
+                const today = new Date();
+                const yyyy = today.getFullYear();
+                const mm = String(today.getMonth() + 1).padStart(2, '0');
+                reportMonth.value = `${yyyy}-${mm}`;
+            }
+            calculateStats();
+        } else if (tab === 'dashboard') {
+            if (tabDashboard) tabDashboard.classList.add('active');
+            if (dashboardSection) dashboardSection.style.display = 'block';
+            if (typeof renderDashboard === 'function') renderDashboard();
+        }
+    };
+
+    tabList.addEventListener('click', () => switchTab('list'));
+    tabReport.addEventListener('click', () => switchTab('report'));
+    if (document.getElementById('tabDashboard')) {
+        document.getElementById('tabDashboard').addEventListener('click', () => switchTab('dashboard'));
+    }
+
+    // Report Type Toggle
+    typeMonthly.addEventListener('click', () => {
+        reportType = 'monthly';
+        typeMonthly.classList.add('active');
+        typePeriod.classList.remove('active');
+        monthlyControls.style.display = 'block';
+        periodControls.style.display = 'none';
+    });
+
+    typePeriod.addEventListener('click', () => {
+        reportType = 'period';
+        typeMonthly.classList.remove('active');
+        typePeriod.classList.add('active');
+        monthlyControls.style.display = 'none';
+        periodControls.style.display = 'flex';
+    });
+
+    // Notification Permission Button
+    const notifyToggle = document.getElementById('notifyToggle');
+
+    const updateNotifyButton = () => {
+        if (!('Notification' in window)) return;
+
+        if (Notification.permission === 'default') {
+            notifyToggle.style.display = 'block';
+            notifyToggle.textContent = '🔔 通知を受け取る';
+            notifyToggle.classList.remove('active');
+        } else if (Notification.permission === 'granted') {
+            notifyToggle.style.display = 'none'; // Hide if already granted to keep UI clean
+        } else {
+            notifyToggle.style.display = 'none'; // Denied
+        }
+    };
+
+    notifyToggle.addEventListener('click', () => {
+        Notification.requestPermission().then(permission => {
+            if (permission === 'granted') {
+                updateNotifyButton();
+                // Try sending one immediately if stagnant items exist
+                const count = checkStagnantItems();
+                sendDailyNotification(count);
+            }
+        });
+    });
+
+    // Initial check
+    updateNotifyButton();
+
+    // Calculate Stats
+    const calculateStats = () => {
+        let filteredProducts = [];
+
+        // 1. Filter by Status 'sold'
+        const soldProducts = state.products.filter(p => p.status === 'sold' && p.saleDate);
+
+        // 2. Filter by Date Range
+        if (reportType === 'monthly') {
+            const selectedMonth = reportMonth.value; // YYYY-MM
+            if (!selectedMonth) return;
+            filteredProducts = soldProducts.filter(p => p.saleDate.startsWith(selectedMonth));
+        } else {
+            const start = reportStartDate.value;
+            const end = reportEndDate.value;
+            if (!start || !end) return;
+            filteredProducts = soldProducts.filter(p => {
+                return p.saleDate >= start && p.saleDate <= end;
+            });
+        }
+
+        // 3. Aggregate
+        const stats = filteredProducts.reduce((acc, p) => {
+            const costs = p.costs || { commission: 0, shipping: 0, packaging: 0 };
+            const commission = costs.commission || 0;
+            const shipping = costs.shipping || 0;
+            const packaging = costs.packaging || 0;
+            const totalCosts = commission + shipping + packaging;
+            const profit = p.sellPrice - p.buyPrice - totalCosts;
+
+            acc.count += 1;
+            acc.sales += (p.sellPrice || 0);
+            acc.cost += (p.buyPrice || 0);
+            acc.commission += commission;
+            acc.shipping += shipping;
+            acc.packaging += packaging;
+            acc.profit += profit;
+            return acc;
+        }, {
+            count: 0, sales: 0, cost: 0, commission: 0, shipping: 0, packaging: 0, profit: 0
+        });
+
+        // 4. Calculate Margin
+        const margin = stats.sales > 0 ? ((stats.profit / stats.sales) * 100).toFixed(1) : 0;
+
+        // 5. Render Stats
+        renderStats(stats, margin);
+    };
+
+    calcBtn.addEventListener('click', calculateStats);
+
+    // --- CSV Export Logic ---
+
+    const exportBtn = document.getElementById('exportBtn');
+
+    // Helper: Generate and Download CSV
+    const generateCSV = (products, startDate, endDate) => {
+        // Headers
+        const headers = [
+            'ID',
+            '商品名',
+            'ステータス',
+            '仕入日',
+            '出品日',
+            '売却日',
+            '仕入価格',
+            '販売価格',
+            '手数料',
+            '送料',
+            '梱包費',
+            '利益',
+            'メモ'
+        ];
+
+        // Rows
+        const rows = products.map(p => {
+            const costs = p.costs || { commission: 0, shipping: 0, packaging: 0 };
+            const commission = costs.commission || 0;
+            const shipping = costs.shipping || 0;
+            const packaging = costs.packaging || 0;
+            const totalCosts = commission + shipping + packaging;
+
+            // Profit calculation only if sold
+            let profit = '';
+            if (p.status === 'sold' && p.sellPrice) {
+                profit = p.sellPrice - p.buyPrice - totalCosts;
+            }
+
+            // Status Label
+            const statusLabel = STATUS_MAP[p.status] ? STATUS_MAP[p.status].label : p.status;
+
+            return [
+                p.id,
+                `"${(p.name || '').replace(/"/g, '""')}"`, // Escape quotes
+                statusLabel,
+                p.purchaseDate || '',
+                p.listingDate || '',
+                p.saleDate || '',
+                p.buyPrice || 0,
+                p.sellPrice || '',
+                commission,
+                shipping,
+                packaging,
+                profit,
+                `"${(p.memo || '').replace(/"/g, '""')}"` // Escape quotes
+            ].join(',');
+        });
+
+        const csvContent = [headers.join(','), ...rows].join('\n');
+
+        // BOM for Excel compatibility
+        const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+        const blob = new Blob([bom, csvContent], { type: 'text/csv' });
+
+        // Filename: apparel_sales_YYYYMMDD_to_YYYYMMDD.csv
+        // Remove hyphens for filename format
+        const fStart = startDate.replace(/-/g, '');
+        const fEnd = endDate.replace(/-/g, '');
+        const filename = `apparel_sales_${fStart}_to_${fEnd}.csv`;
+
+        // Download Trigger
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    };
+
+    exportBtn.addEventListener('click', () => {
+        let targetProducts = [];
+        let startDate = '';
+        let endDate = '';
+
+        // 1. Base Filter: Sold Items
+        const soldProducts = state.products.filter(p => p.status === 'sold' && p.saleDate);
+
+        // 2. Determine Date Range
+        if (reportType === 'monthly') {
+            const selectedMonth = reportMonth.value; // YYYY-MM
+            if (!selectedMonth) {
+                alert('月を選択してください');
+                return;
+            }
+
+            // Calculate start and end of the month
+            const [year, month] = selectedMonth.split('-').map(Number);
+            startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+
+            // Last day of the month
+            const lastDay = new Date(year, month, 0).getDate();
+            endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+            targetProducts = soldProducts.filter(p => p.saleDate >= startDate && p.saleDate <= endDate);
+
+        } else {
+            // Period Mode
+            startDate = reportStartDate.value;
+            endDate = reportEndDate.value;
+
+            if (!startDate || !endDate) {
+                alert('開始日と終了日を選択してください');
+                return;
+            }
+
+            // Basic validation
+            if (startDate > endDate) {
+                alert('開始日は終了日より前の日付を指定してください');
+                return;
+            }
+
+            targetProducts = soldProducts.filter(p => {
+                return p.saleDate >= startDate && p.saleDate <= endDate;
+            });
+        }
+
+        if (targetProducts.length === 0) {
+            alert('対象期間に売却済みの商品がありません');
+            return;
+        }
+
+        // 3. Generate CSV
+        generateCSV(targetProducts, startDate, endDate);
+    });
+
+    const renderStats = (stats, margin) => {
+        statsGrid.innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">売却点数</div>
+                <div class="stat-value">${stats.count}点</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">売上合計</div>
+                <div class="stat-value sales">${formatCurrency(stats.sales)}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">利益合計</div>
+                <div class="stat-value profit">${formatCurrency(stats.profit)}</div>
+                <div class="stat-subtext">利益率: ${margin}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">仕入合計</div>
+                <div class="stat-value">${formatCurrency(stats.cost)}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">手数料合計</div>
+                <div class="stat-value">${formatCurrency(stats.commission)}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">送料合計</div>
+                <div class="stat-value">${formatCurrency(stats.shipping)}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">梱包費合計</div>
+                <div class="stat-value">${formatCurrency(stats.packaging)}</div>
+            </div>
+        `;
+    };
+
+
+    // --- Existing Core Logic ---
+
+    // Render Function
+    const render = () => {
+        grid.innerHTML = '';
+
+        if (state.products.length === 0) {
+            emptyState.style.display = 'block';
+            return;
+        } else {
+            emptyState.style.display = 'none';
+        }
+
+        // Sort: Active first, then Sold
+        const sortedProducts = [...state.products].sort((a, b) => {
+            // Priority: Sold last
+            const isSoldA = a.status === 'sold';
+            const isSoldB = b.status === 'sold';
+            if (isSoldA !== isSoldB) return isSoldA ? 1 : -1;
+            return b.id - a.id;
+        });
+
+        sortedProducts.forEach(product => {
+            // Migration / Default Status
+            let status = product.status;
+            // Legacy data migration
+            if (status === 'active') status = 'listed';
+            if (!STATUS_MAP[status]) status = 'purchased'; // Default fallback
+
+            const statusInfo = STATUS_MAP[status];
+
+            // Migration for old data
+            const images = product.images || (product.image ? [product.image] : []);
+            const mainImage = images.length > 0 ? images[0] : 'https://placehold.co/400x300?text=No+Image';
+
+            const card = document.createElement('div');
+            card.className = 'card';
+
+            const isSold = status === 'sold';
+
+            // Calculate Profit
+            const costs = product.costs || { commission: 0, shipping: 0, packaging: 0 };
+            const totalCosts = (costs.commission || 0) + (costs.shipping || 0) + (costs.packaging || 0);
+            const profit = isSold ? (product.sellPrice - product.buyPrice - totalCosts) : 0;
+
+            card.innerHTML = `
+                <div class="status-badge ${statusInfo.class}">${statusInfo.label}</div>
+                <button class="edit-btn" onclick="openEditModal(${product.id})" title="修正する">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                </button>
+                <button class="edit-btn" style="left: 3.5rem; color: #ef4444;" onclick="deleteProduct(${product.id})" title="削除する">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+                <div style="position: relative;">
+                    <img src="${mainImage}" class="card-image" alt="${product.name}">
+                    ${images.length > 1 ? `<div class="photo-badge">
+                        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 0 002-2V6a2 0 00-2-2H6a2 0 00-2 2v12a2 0 002 2z"></path></svg>
+                        <span>${images.length}</span>
+                    </div>` : ''}
+                </div>
+                <div class="card-content">
+                    <h3 class="card-title">${product.name}</h3>
+                    <div class="card-price-row">
+                        <span>仕入: ${formatCurrency(product.buyPrice)}</span>
+                    </div>
+                    
+                    ${isSold ? `
+                        <div class="profit-badge" style="background-color: ${profit >= 0 ? '#ecfdf5' : '#fef2f2'}; color: ${profit >= 0 ? '#059669' : '#b91c1c'};">
+                            <span>利益</span>
+                            <span>${profit > 0 ? '+' : ''}${formatCurrency(profit)}</span>
+                        </div>
+                    ` : `
+                        <button class="btn-sell" onclick="openSellModal(${product.id})">
+                            売却する
+                        </button>
+                    `}
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+    };
+
+    // Render Image Preview Grid
+    const renderImagePreviews = () => {
+        imagePreviewContainer.innerHTML = '';
+        if (currentImages.length > 0) {
+            filePrompt.style.display = 'none';
+            currentImages.forEach((imgSrc, index) => {
+                const div = document.createElement('div');
+                div.className = 'preview-item';
+                div.innerHTML = `
+                    <img src="${imgSrc}">
+                    <button type="button" class="remove-image-btn" onclick="removeImage(${index})">×</button>
+                `;
+                imagePreviewContainer.appendChild(div);
+            });
+        } else {
+            filePrompt.style.display = 'block';
+        }
+    };
+
+    // Expose removeImage
+    window.removeImage = (index) => {
+        currentImages.splice(index, 1);
+        renderImagePreviews();
+    };
+
+    // Image Handling
+    const handleFiles = (files) => {
+        if (!files.length) return;
+
+        Array.from(files).forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                currentImages.push(e.target.result);
+                renderImagePreviews();
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    dropZone.addEventListener('click', (e) => {
+        if (e.target.closest('.remove-image-btn') || e.target.closest('.preview-item')) return;
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+    // Drag & Drop
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = 'var(--primary)';
+    });
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.style.borderColor = '#cbd5e1';
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#cbd5e1';
+        handleFiles(e.dataTransfer.files);
+    });
+
+    // Add Item Logic
+    addBtn.addEventListener('click', () => {
+        currentEditId = null;
+        document.querySelector('.modal-title').textContent = '新しい商品';
+        document.querySelector('#addForm button[type="submit"]').textContent = '登録する';
+
+        addForm.reset();
+        document.getElementById('itemStatus').value = 'purchased'; // Default
+        currentImages = [];
+        renderImagePreviews();
+        addModal.classList.add('active');
+    });
+
+    // Expose openEditModal
+    window.openEditModal = (id) => {
+        const product = state.products.find(p => p.id === id);
+        if (!product) return;
+
+        currentEditId = id;
+        document.querySelector('.modal-title').textContent = '商品を修正';
+        document.querySelector('#addForm button[type="submit"]').textContent = '更新する';
+
+        // Fill form
+        document.getElementById('itemName').value = product.name;
+        document.getElementById('buyPrice').value = product.buyPrice;
+        document.getElementById('purchaseDate').value = product.purchaseDate || '';
+        document.getElementById('listingDate').value = product.listingDate || '';
+        document.getElementById('editSellPrice').value = product.sellPrice || '';
+        document.getElementById('saleDate').value = product.saleDate || '';
+        document.getElementById('itemMemo').value = product.memo || '';
+
+        // Fill costs
+        const costs = product.costs || {};
+        document.getElementById('costCommission').value = costs.commission || '';
+        document.getElementById('costShipping').value = costs.shipping || '';
+        document.getElementById('costPackaging').value = costs.packaging || '';
+
+        // Handle Status
+        let status = product.status;
+        if (status === 'active') status = 'listed';
+        if (!STATUS_MAP[status]) status = 'purchased';
+
+        // Stagnant Suggestion Logic
+        if (status === 'listed' && product.listingDate) {
+            const daysDiff = getDaysDiff(product.listingDate);
+            if (daysDiff >= 30) {
+                // Suggest stagnant
+                status = 'stagnant';
+                // Could alert user: "出品から30日経過しています。ステータスを'回転悪化'に変更しますか？"
+                // For now, auto-select it in dropdown for suggestion
+            }
+        }
+        document.getElementById('itemStatus').value = status;
+
+        // Handle Images
+        currentImages = product.images ? [...product.images] : (product.image ? [product.image] : []);
+        renderImagePreviews();
+
+        addModal.classList.add('active');
+    };
+
+    // Expose deleteProduct
+    window.deleteProduct = (id) => {
+        if (confirm('本当にこの商品を削除しますか？\n削除したデータは元に戻せません。')) {
+            const index = state.products.findIndex(p => p.id === id);
+            if (index !== -1) {
+                state.products.splice(index, 1);
+                save();
+            }
+        }
+    };
+
+    closeAddModal.addEventListener('click', () => addModal.classList.remove('active'));
+
+    addForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const name = document.getElementById('itemName').value;
+        const buyPrice = parseInt(document.getElementById('buyPrice').value);
+        const purchaseDate = document.getElementById('purchaseDate').value;
+        const listingDate = document.getElementById('listingDate').value;
+
+        const sellPriceInput = document.getElementById('editSellPrice').value;
+        const sellPrice = sellPriceInput ? parseInt(sellPriceInput) : null;
+        const saleDate = document.getElementById('saleDate').value;
+        const memo = document.getElementById('itemMemo').value;
+        let status = document.getElementById('itemStatus').value;
+
+        // Auto 'Sold' status logic
+        if (sellPrice !== null && saleDate) {
+            status = 'sold';
+        }
+
+        // Costs
+        const costs = {
+            commission: parseInt(document.getElementById('costCommission').value) || 0,
+            shipping: parseInt(document.getElementById('costShipping').value) || 0,
+            packaging: parseInt(document.getElementById('costPackaging').value) || 0
+        };
+
+        if (currentEditId !== null) {
+            // Update
+            const index = state.products.findIndex(p => p.id === currentEditId);
+            if (index !== -1) {
+                state.products[index].name = name;
+                state.products[index].buyPrice = buyPrice;
+                state.products[index].purchaseDate = purchaseDate;
+                state.products[index].listingDate = listingDate;
+
+                state.products[index].sellPrice = sellPrice;
+                state.products[index].saleDate = saleDate;
+                state.products[index].status = status;
+                state.products[index].costs = costs;
+                state.products[index].memo = memo;
+
+                state.products[index].images = currentImages;
+                delete state.products[index].image;
+            }
+        } else {
+            // Create
+            const newProduct = {
+                id: Date.now(),
+                name,
+                buyPrice,
+                purchaseDate,
+                listingDate,
+                images: currentImages,
+                status: status, // Defaults to 'purchased' or selected
+                sellPrice: sellPrice,
+                saleDate,
+                costs: costs,
+                memo: memo
+            };
+            state.products.unshift(newProduct);
+        }
+
+        save();
+        addModal.classList.remove('active');
+    });
+
+    // --- Mobile Optimization Logic ---
+
+    // Status Chips Logic
+    const statusChips = document.querySelectorAll('.status-chip');
+    const statusSelect = document.getElementById('itemStatus');
+
+    const updateChips = (selectedValue) => {
+        statusChips.forEach(chip => {
+            if (chip.dataset.value === selectedValue) {
+                chip.classList.add('active');
+                // Ensure specific styling for statuses based on CSS if needed, 
+                // currently just 'active' class which maps to primary color.
+            } else {
+                chip.classList.remove('active');
+            }
+        });
+        statusSelect.value = selectedValue;
+    };
+
+    statusChips.forEach(chip => {
+        chip.addEventListener('click', () => {
+            updateChips(chip.dataset.value);
+        });
+    });
+
+    // Sync Select change to Chips (in case PC view changes it or logic does)
+    statusSelect.addEventListener('change', () => {
+        updateChips(statusSelect.value);
+    });
+
+    // Enhance Open Edit Modal for Defaults
+    const originalOpenEditModal = window.openEditModal;
+    window.openEditModal = (id) => {
+        originalOpenEditModal(id);
+        // Sync chips to the current status
+        const product = state.products.find(p => p.id === id);
+        if (product) updateChips(product.status);
+    };
+
+    // Enhance Add Button for Defaults
+    const originalAddBtnClick = addBtn.onclick;
+    // Note: addBtn has event listener, not onclick. We need to hook into the existing listener or add a new one that runs after?
+    // Listeners run in order. We can just add another listener to addBtn.
+
+    addBtn.addEventListener('click', () => {
+        // 1. Auto-Focus Name
+        setTimeout(() => {
+            const nameInput = document.getElementById('itemName');
+            nameInput.focus();
+        }, 100); // Small delay for modal animation
+
+        // 2. Set Default Date to Today
+        const today = new Date().toISOString().split('T')[0];
+        const purchaseDateInput = document.getElementById('purchaseDate');
+        if (!purchaseDateInput.value) {
+            purchaseDateInput.value = today;
+        }
+
+        // 3. Reset Chips
+        updateChips('purchased');
+    });
+
+
+
+    // --- One-Tap Sell Logic ---
+
+    // DOM Elements - Sell Modal
+    const sellModal = document.getElementById('sellModal');
+    const closeSellModal = document.getElementById('closeSellModal');
+    const sellForm = document.getElementById('sellForm');
+    let currentSellId = null;
+
+    // Open Simple Sell Modal
+    window.openSellModal = (id) => {
+        const product = state.products.find(p => p.id === id);
+        if (!product) return;
+
+        currentSellId = id;
+        document.getElementById('sellItemName').textContent = product.name;
+        document.getElementById('sellPrice').value = product.sellPrice || '';
+
+        // Set Default Date to Today
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('sellDate').value = product.saleDate || today;
+
+        sellModal.classList.add('active');
+
+        // Auto-focus price
+        setTimeout(() => {
+            document.getElementById('sellPrice').focus();
+        }, 100);
+    };
+
+    closeSellModal.addEventListener('click', () => sellModal.classList.remove('active'));
+
+    sellForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+
+        if (!confirm('この商品を「売却済」にします。よろしいですか？')) {
+            return;
+        }
+
+        const price = parseInt(document.getElementById('sellPrice').value);
+        const date = document.getElementById('sellDate').value;
+
+        const index = state.products.findIndex(p => p.id === currentSellId);
+        if (index !== -1) {
+            state.products[index].sellPrice = price;
+            state.products[index].saleDate = date;
+            state.products[index].status = 'sold';
+            // Costs and other fields remain unchanged
+        }
+
+        save();
+        sellModal.classList.remove('active');
+    });
+
+    // Initial Render
+    render();
+
+    // --- Stagnant Inventory Logic ---
+
+    // Check and Update Stagnant Items
+    const checkStagnantItems = () => {
+        const checkDate = new Date();
+        // 30 days ago
+        checkDate.setDate(checkDate.getDate() - 30);
+        const thresholdDate = checkDate.toISOString().split('T')[0];
+
+        let hasUpdates = false;
+        let stagnantCount = 0;
+
+        state.products.forEach(p => {
+            // Target: Listed items older than 30 days
+            if (p.status === 'listed' && p.listingDate && p.listingDate <= thresholdDate) {
+                p.status = 'stagnant';
+                hasUpdates = true;
+                stagnantCount++;
+            } else if (p.status === 'stagnant') {
+                // Count existing stagnant items too
+                stagnantCount++;
+            }
+        });
+
+        if (hasUpdates) {
+            save();
+            // Show toast or alert in-app? maybe just silent update is fine as per req.
+        }
+
+        return stagnantCount;
+    };
+
+    // Send Notification
+    const sendDailyNotification = (count) => {
+        if (count === 0) return;
+
+        // Check last notification date
+        const today = new Date().toISOString().split('T')[0];
+        const lastNotified = localStorage.getItem('last_notification_date');
+
+        if (lastNotified === today) return;
+
+        // Verify Permission
+        if (!('Notification' in window)) return;
+
+        if (Notification.permission === 'granted') {
+            try {
+                new Notification('アパレル管理: 回転悪化の通知', {
+                    body: `${count}件の商品が30日以上売れていません。価格や写真を見直しましょう。`,
+                    icon: './icon-192.png'
+                });
+                localStorage.setItem('last_notification_date', today);
+            } catch (e) {
+                console.error('Notification failed', e);
+            }
+        }
+    };
+
+    // Run Checks
+    const stagnantCount = checkStagnantItems();
+
+    // Notification logic runs after permission check/request
+    // We'll add a UI trigger for permission if not granted
+    if (Notification.permission === 'default') {
+        // Option: Show a small banner? For now, we will add a button in Report section via HTML update
+    } else if (Notification.permission === 'granted') {
+        sendDailyNotification(stagnantCount);
+    }
+
+    // --- Dashboard Logic ---
+
+    const dashboardSection = document.getElementById('dashboardSection');
+    const tabDashboard = document.getElementById('tabDashboard');
+
+    const renderDashboard = () => {
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const currentMonthStr = todayStr.slice(0, 7); // YYYY-MM
+
+        // Date Header
+        document.getElementById('dashDate').textContent = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`;
+
+        // Filter Sold Items
+        const soldItems = state.products.filter(p => p.status === 'sold' && p.saleDate);
+
+        // Today's Stats
+        const todayItems = soldItems.filter(p => p.saleDate === todayStr);
+        const todayStats = calculatePeriodStats(todayItems);
+
+        document.getElementById('dashTodayCount').textContent = `${todayStats.count}点`;
+        document.getElementById('dashTodaySales').textContent = formatCurrency(todayStats.sales);
+        document.getElementById('dashTodayProfit').textContent = formatCurrency(todayStats.profit);
+
+        // Month's Stats
+        const monthItems = soldItems.filter(p => p.saleDate.startsWith(currentMonthStr));
+        const monthStats = calculatePeriodStats(monthItems);
+
+        document.getElementById('dashMonthCount').textContent = `${monthStats.count}点`;
+        document.getElementById('dashMonthSales').textContent = formatCurrency(monthStats.sales);
+        document.getElementById('dashMonthProfit').textContent = formatCurrency(monthStats.profit);
+
+        // Alert Items
+        const stagnantCount = state.products.filter(p => p.status === 'stagnant').length;
+        const alertCard = document.getElementById('dashAlertCard');
+        if (stagnantCount > 0) {
+            alertCard.style.display = 'block';
+            document.getElementById('dashStagnantCount').textContent = `${stagnantCount}件`;
+        } else {
+            alertCard.style.display = 'none';
+        }
+    };
+
+    const calculatePeriodStats = (items) => {
+        return items.reduce((acc, p) => {
+            const costs = p.costs || { commission: 0, shipping: 0, packaging: 0 };
+            const totalCosts = (costs.commission || 0) + (costs.shipping || 0) + (costs.packaging || 0);
+            const profit = p.sellPrice - p.buyPrice - totalCosts;
+
+            acc.count++;
+            acc.sales += p.sellPrice;
+            acc.profit += profit;
+            return acc;
+        }, { count: 0, sales: 0, profit: 0 });
+    };
+
+    // Dashboard Actions
+    document.getElementById('dashBtnAdd').addEventListener('click', () => {
+        addBtn.click(); // Trigger existing add modal
+    });
+
+    document.getElementById('dashBtnList').addEventListener('click', () => {
+        switchTab('list');
+    });
+
+    document.getElementById('dashAlertCard').addEventListener('click', () => {
+        switchTab('list');
+        // Ideally filter by stagnant, but simple switch is fine for now
+    });
+
+    // Modified Switch Tab to include Dashboard
+    const originalSwitchTab = switchTab;
+    const newSwitchTab = (tab) => {
+        if (tab === 'dashboard') {
+            tabList.classList.remove('active');
+            tabReport.classList.remove('active');
+            if (tabDashboard) tabDashboard.classList.add('active');
+
+            listViewControls.style.display = 'none';
+            grid.style.display = 'none';
+            emptyState.style.display = 'none';
+            reportSection.style.display = 'none';
+            dashboardSection.style.display = 'block';
+
+            renderDashboard();
+        } else {
+            if (tabDashboard) tabDashboard.classList.remove('active');
+            dashboardSection.style.display = 'none';
+            originalSwitchTab(tab);
+        }
+    };
+    // Override local switchTab function reference within the scope if possible?
+    // Actually we need to update the event listeners or wrappers. 
+    // Since original switchTab is const, we can't overwrite it easily in same scope.
+    // Let's just use a wrapper for the listeners.
+
+    // Re-bind tab listeners
+    if (tabDashboard) {
+        tabDashboard.addEventListener('click', () => newSwitchTab('dashboard'));
+    }
+    // Note: tabList and tabReport already have listeners calling switchTab. 
+    // We need to update their listeners or update the switchTab implementation.
+    // Since we can't specificly 'unlisten' anonymous functions easily, we can just ensure newSwitchTab handles the hiding logic correctly
+    // and rely on the fact that existing switchTab handles list/report toggling.
+    // BUT existing switchTab doesn't know about dashboardSection. So we DO need to modify the original switchTab logic.
+    // The easist way is to Replace the original switchTab function declaration in the code.
+    // But since I am appending code, I cannot change the original calculation logic easily without a big replace.
+    // However, I can inject the hiding of dashboardSection into the original switchTab? No.
+
+    // Let's try to overwrite the behavior by updating the click handlers logic? No.
+    // Plan: I'll use `replace_file_content` to MODIFY the original switchTab function to handle 'dashboard' and hiding logic.
+
+    // Initial View Logic
+
+
+    // --- Google Drive Backup Logic ---
+
+    const CLIENT_ID = '762899577808-it6q0cqjjgn3eqltm04nfektqcvhebtg.apps.googleusercontent.com';
+    const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
+    let tokenClient;
+    let gToken = localStorage.getItem('google_access_token');
+    const googleLoginBtn = document.getElementById('googleLoginBtn');
+
+    // 1. Initialize Google Auth
+    window.initGoogleAuth = () => {
+        if (!window.google) {
+            // Wait for script to load if not ready
+            setTimeout(initGoogleAuth, 500);
+            return;
+        }
+
+        tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CLIENT_ID,
+            scope: SCOPES,
+            callback: (tokenResponse) => {
+                if (tokenResponse.access_token) {
+                    gToken = tokenResponse.access_token;
+                    localStorage.setItem('google_access_token', gToken);
+                    updateLoginUI(true);
+                    // Do immediate backup after login
+                    backupToDrive(state.products);
+                }
+            },
+        });
+
+        // Initial UI State
+        if (gToken) {
+            updateLoginUI(true);
+            // Auto backup on app load if logged in
+            backupToDrive(state.products);
+        } else {
+            updateLoginUI(false);
+        }
+
+        // Button Listener
+        googleLoginBtn.onclick = handleGoogleLogin;
+    };
+
+    // 2. Handle Login Click
+    window.handleGoogleLogin = () => {
+        if (gToken) {
+            // Already logged in -> Maybe logout? Or purely status indicator.
+            // User requirement says "Skip login screen if authenticated".
+            // Let's allow re-login/refresh if clicked, or logout.
+            // For now, simple Alert or re-auth to refresh token if expired.
+            if (confirm('Googleアカウントからログアウトしますか？')) {
+                gToken = null;
+                localStorage.removeItem('google_access_token');
+                updateLoginUI(false);
+            }
+        } else {
+            // Force account selection prompt (Via initTokenClient)
+            tokenClient.requestAccessToken();
+        }
+    };
+
+    const updateLoginUI = (isLoggedIn) => {
+        googleLoginBtn.style.display = 'flex'; // Ensure visible once initialized
+        if (isLoggedIn) {
+            googleLoginBtn.innerHTML = `
+                <span style="color: #059669; font-weight: bold;">✔ Backup ON</span>
+            `;
+            googleLoginBtn.title = "ログアウトするにはクリック";
+        } else {
+            googleLoginBtn.innerHTML = `
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18" height="18" alt="G">
+                <span>Google Login</span>
+            `;
+            googleLoginBtn.title = "Google Driveにバックアップ";
+        }
+    };
+
+    // 3. Backup to Drive
+    window.backupToDrive = async (data) => {
+        if (!gToken) return;
+
+        console.log('Starting Backup...');
+        const filename = `apparel_backup_${new Date().toISOString().split('T')[0].replace(/-/g, '')}.json`;
+        const fileContent = JSON.stringify(data, null, 2);
+        const fileData = new Blob([fileContent], { type: 'application/json' });
+
+        try {
+            // A. Search for existing file
+            const searchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and 'appDataFolder' in parents&spaces=appDataFolder`;
+            const searchRes = await fetch(searchUrl, {
+                headers: { 'Authorization': `Bearer ${gToken}` }
+            });
+
+            if (searchRes.status === 401) {
+                // Token expired
+                console.warn('Token expired');
+                gToken = null;
+                localStorage.removeItem('google_access_token');
+                updateLoginUI(false);
+                alert('Google認証の有効期限が切れました。\n再度ログインしてバックアップを有効にしてください。');
+                return;
+            }
+
+            const searchJson = await searchRes.json();
+            const existingFile = searchJson.files && searchJson.files.length > 0 ? searchJson.files[0] : null;
+
+            // B. Upload (Update or Create)
+            const metadata = {
+                name: filename,
+                mimeType: 'application/json',
+                parents: existingFile ? [] : ['appDataFolder'] // Only set parent on create
+            };
+
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', fileData);
+
+            let uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+            let method = 'POST';
+
+            if (existingFile) {
+                uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=multipart`;
+                method = 'PATCH';
+            }
+
+            const uploadRes = await fetch(uploadUrl, {
+                method: method,
+                headers: { 'Authorization': `Bearer ${gToken}` },
+                body: form
+            });
+
+            if (!uploadRes.ok) {
+                throw new Error(`Upload failed: ${uploadRes.status}`);
+            }
+
+            console.log('Backup successful');
+            // Optional: Subtle notification
+            // const toast = document.createElement('div');
+            // toast.textContent = 'バックアップ完了';
+            // ... (Simple keeping per requirements "Alert on error")
+
+        } catch (error) {
+            console.error('Backup error:', error);
+            alert(`バックアップに失敗しました: ${error.message}`);
+        }
+    };
+
+    // Start Auth Init
+    // Delay slightly to ensure google script loaded or poll
+    initGoogleAuth();
+
+}); // End of DOMContentLoaded

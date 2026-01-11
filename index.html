@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <title>Apparel Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="theme-color" content="#4f46e5">
+    <!-- Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+
+<body>
+    <div class="container">
+        <header style="display: flex; justify-content: space-between; align-items: center;">
+            <h1>Apparel Manager</h1>
+            <!-- Google Login Button -->
+            <button id="googleLoginBtn" class="btn"
+                style="background: white; color: #444; border: 1px solid #ddd; font-size: 0.85rem; padding: 0.4rem 0.8rem; display: flex; align-items: center; gap: 0.5rem; display: none;">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18" height="18"
+                    alt="G">
+                <span>Login</span>
+            </button>
+        </header>
+
+        <!-- Tab Navigation -->
+        <div class="nav-tabs">
+            <button class="nav-tab active" id="tabList">商品一覧</button>
+            <button class="nav-tab" id="tabReport">集計レポート</button>
+            <button class="nav-tab mobile-only" id="tabDashboard" style="display: none;">ホーム</button>
+        </div>
+
+        <!-- Dashboard Section (Mobile Only) -->
+        <div id="dashboardSection" class="mobile-only" style="display: none;">
+            <div class="dashboard-header">
+                <h2 id="dashDate">----/--/--</h2>
+            </div>
+
+            <!-- Quick Stats -->
+            <div class="dash-card">
+                <h3>今日の成績</h3>
+                <div class="dash-stats-row">
+                    <div class="dash-stat">
+                        <span class="label">売却</span>
+                        <span class="value" id="dashTodayCount">0</span>
+                    </div>
+                    <div class="dash-stat">
+                        <span class="label">売上</span>
+                        <span class="value" id="dashTodaySales">¥0</span>
+                    </div>
+                    <div class="dash-stat">
+                        <span class="label">利益</span>
+                        <span class="value highlight" id="dashTodayProfit">¥0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-card">
+                <h3>今月の成績</h3>
+                <div class="dash-stats-row">
+                    <div class="dash-stat">
+                        <span class="label">売却</span>
+                        <span class="value" id="dashMonthCount">0</span>
+                    </div>
+                    <div class="dash-stat">
+                        <span class="label">売上</span>
+                        <span class="value" id="dashMonthSales">¥0</span>
+                    </div>
+                    <div class="dash-stat">
+                        <span class="label">利益</span>
+                        <span class="value highlight" id="dashMonthProfit">¥0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alert Card -->
+            <div class="dash-card alert-card" id="dashAlertCard" style="display: none;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.5rem;">⚠️</span>
+                        <div>
+                            <div style="font-weight: 700; color: #dc2626;">回転悪化</div>
+                            <div style="font-size: 0.85rem; color: #666;">30日以上未売却</div>
+                        </div>
+                    </div>
+                    <div class="value" style="color: #dc2626;" id="dashStagnantCount">0件</div>
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="action-grid">
+                <button class="action-btn primary" id="dashBtnAdd">
+                    <span class="icon">+</span>
+                    商品を追加
+                </button>
+                <button class="action-btn" id="dashBtnList">
+                    <span class="icon">≡</span>
+                    一覧を見る
+                </button>
+            </div>
+        </div>
+
+        <!-- List View Controls -->
+        <div id="listViewControls">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+                <h2 class="section-title" style="margin-bottom: 0;">在庫一覧</h2>
+                <div style="display: flex; gap: 1rem;">
+                    <!-- Existing Add Button -->
+                    <button class="btn btn-primary" id="addBtn">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                            style="margin-right: 0.5rem;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4">
+                            </path>
+                        </svg>
+                        商品を追加
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- List View Content -->
+        <div id="productGrid" class="product-grid">
+            <!-- Dynamic Content -->
+        </div>
+
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <h2>まだ商品がありません</h2>
+            <p>右上のボタンから商品を追加してください。</p>
+        </div>
+
+        <!-- Report Section -->
+        <div id="reportSection" style="display: none;">
+            <div class="report-controls">
+                <div class="report-type-toggle">
+                    <button class="toggle-btn active" id="typeMonthly">月別</button>
+                    <button class="toggle-btn" id="typePeriod">期間指定</button>
+                    <button class="toggle-btn" id="notifyToggle" style="margin-left: auto; display: none;">🔔
+                        通知ON</button>
+                </div>
+
+                <div id="monthlyControls">
+                    <input type="month" class="form-input" id="reportMonth">
+                </div>
+
+                <div id="periodControls" style="display: none; align-items: center; gap: 0.5rem;">
+                    <input type="date" class="form-input" id="reportStartDate">
+                    <span>~</span>
+                    <input type="date" class="form-input" id="reportEndDate">
+                </div>
+
+                <button class="btn btn-primary" id="calcBtn" style="padding: 0.5rem 1.5rem;">集計</button>
+                <button class="btn btn-primary" id="exportBtn"
+                    style="padding: 0.5rem 1.5rem; background-color: #059669;">CSV出力</button>
+            </div>
+
+            <div class="stats-grid" id="statsGrid">
+                <!-- Stats Cards will be injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Product Modal -->
+    <div id="addModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">新しい商品</h2>
+                <button class="close-btn" id="closeAddModal">×</button>
+            </div>
+            <form id="addForm">
+                <div class="form-group">
+                    <label class="form-label">商品名</label>
+                    <input type="text" class="form-input" id="itemName" required placeholder="例: ヴィンテージ デニムジャケット">
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label class="form-label">仕入価格 (円)</label>
+                        <input type="number" inputmode="numeric" class="form-input" id="buyPrice" required
+                            placeholder="5000">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">仕入日</label>
+                        <input type="date" class="form-input" id="purchaseDate">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">出店日</label>
+                        <input type="date" class="form-input" id="listingDate">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">ステータス</label>
+                    <!-- Mobile optimized status chips -->
+                    <div class="status-chips-container" id="statusChips">
+                        <button type="button" class="status-chip" data-value="purchased">仕入済</button>
+                        <button type="button" class="status-chip" data-value="listed">出品中</button>
+                        <button type="button" class="status-chip" data-value="sold">売却済</button>
+                        <button type="button" class="status-chip" data-value="hold">保留</button>
+                    </div>
+                    <!-- Original select (hidden on mobile via CSS but kept for logic) -->
+                    <select class="form-input status-select-desktop" id="itemStatus">
+                        <option value="purchased">仕入済 (未出品)</option>
+                        <option value="listed">出品中</option>
+                        <option value="sold">売却済</option>
+                        <option value="hold">保留</option>
+                        <option value="stagnant">回転悪化 (30日以上)</option>
+                    </select>
+                </div>
+
+                <div style="background: #f8fafc; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+                    <label class="form-label"
+                        style="color: var(--primary); font-weight: 600; margin-bottom: 1rem; display: block;">売却情報</label>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label class="form-label">販売価格 (円)</label>
+                            <input type="number" inputmode="numeric" class="form-input" id="editSellPrice"
+                                placeholder="未売却の場合は空欄">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">販売日</label>
+                            <input type="date" class="form-input" id="saleDate">
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.85rem;">手数料 (円)</label>
+                            <input type="number" inputmode="numeric" class="form-input" id="costCommission"
+                                placeholder="0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.85rem;">送料 (円)</label>
+                            <input type="number" inputmode="numeric" class="form-input" id="costShipping"
+                                placeholder="0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.85rem;">梱包費 (円)</label>
+                            <input type="number" inputmode="numeric" class="form-input" id="costPackaging"
+                                placeholder="0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">メモ</label>
+                    <textarea class="form-input" id="itemMemo" rows="3" placeholder="商品の特徴、状態、購入者の情報など"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">写真 (複数選択可)</label>
+                    <div class="file-drop-area" id="dropZone">
+                        <span id="filePrompt">写真を撮影 / 画像を選択</span>
+                        <input type="file" id="itemImage" accept="image/*" capture="environment" multiple
+                            style="display: none;">
+                        <div id="imagePreviewContainer" class="preview-grid"></div>
+                    </div>
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">登録する</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Sell Product Modal -->
+    <div id="sellModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">売却処理</h2>
+                <button class="close-btn" id="closeSellModal">×</button>
+            </div>
+            <form id="sellForm">
+                <div class="form-group">
+                    <label class="form-label">商品名: <span id="sellItemName"
+                            style="font-weight: normal; color: var(--text-primary);"></span></label>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">販売価格 (円)</label>
+                    <input type="number" inputmode="numeric" class="form-input" id="sellPrice" required
+                        placeholder="8000">
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">『売却済』にする</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js" defer></script>
+</body>
+
+</html>
